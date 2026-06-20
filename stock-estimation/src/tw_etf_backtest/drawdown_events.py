@@ -4,13 +4,28 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from .text_format import display_width as _display_width
+from .text_format import pad as _pad
+
 
 @dataclass
 class DrawdownEvent:
     date: pd.Timestamp
-    bucket: str  # e.g. "15%", "25%", "40%", ">40%"
+    bucket: str  # e.g. "15% ~ 25%", "25% ~ 40%", "40% ~"
     drawdown: float  # negative fraction, e.g. -0.182
     interval_days: int | None = None  # calendar days since the previous row in the full table
+
+
+def _bucket_labels(thresholds: list[float]) -> list[str]:
+    """One label per sorted threshold, spanning to the next threshold; the last is open-ended."""
+    thresholds = sorted(thresholds)
+    labels = []
+    for i, lo in enumerate(thresholds):
+        if i == len(thresholds) - 1:
+            labels.append(f"{lo:.0%} ~")
+        else:
+            labels.append(f"{lo:.0%} ~ {thresholds[i + 1]:.0%}")
+    return labels
 
 
 def compute_drawdown_events(prices: pd.Series, thresholds: list[float]) -> list[DrawdownEvent]:
@@ -19,26 +34,31 @@ def compute_drawdown_events(prices: pd.Series, thresholds: list[float]) -> list[
     Uses the same running-high-watermark / per-cycle-reset semantics as the
     dip-buy ladder in strategy.py, but is independent of cash availability.
     Each threshold fires once per cycle (the period between one new high and
-    the next), on the day drawdown first crosses below it. Cycles whose
-    deepest drawdown exceeds the largest configured threshold also get one
-    extra event dated at the cycle's trough (its lowest price), distinct
-    from the day the largest threshold was first crossed.
+    the next), on the day drawdown first crosses below it; the row is bucketed
+    by the range between that threshold and the next one up (the top bucket is
+    open-ended). Cycles whose deepest drawdown exceeds the largest configured
+    threshold also get one extra event dated at the cycle's trough (its lowest
+    price), distinct from the day the largest threshold was first crossed.
     """
     thresholds = sorted(thresholds)
     max_threshold = thresholds[-1]
-    open_bucket = f">{max_threshold:.0%}"
+    labels = _bucket_labels(thresholds)
+    open_bucket = labels[-1]
 
     dates = prices.index
     peak = prices.iloc[0]
     triggered: set[float] = set()
     cycle_min_price = prices.iloc[0]
     cycle_min_date = dates[0]
+    max_threshold_trigger_date: pd.Timestamp | None = None
 
     raw_events: list[tuple[pd.Timestamp, str, float]] = []
 
     def close_cycle() -> None:
         cycle_drawdown = cycle_min_price / peak - 1
-        if cycle_drawdown <= -max_threshold:
+        # Skip the trough event if it falls on the same day the max threshold was first
+        # crossed: in that case it carries no information beyond the regular crossing event.
+        if cycle_drawdown <= -max_threshold and cycle_min_date != max_threshold_trigger_date:
             raw_events.append((cycle_min_date, open_bucket, cycle_drawdown))
 
     for date in dates:
@@ -50,15 +70,18 @@ def compute_drawdown_events(prices: pd.Series, thresholds: list[float]) -> list[
             triggered = set()
             cycle_min_price = price
             cycle_min_date = date
+            max_threshold_trigger_date = None
         elif price < cycle_min_price:
             cycle_min_price = price
             cycle_min_date = date
 
         drawdown = price / peak - 1
-        for thr in thresholds:
+        for i, thr in enumerate(thresholds):
             if thr not in triggered and drawdown <= -thr:
                 triggered.add(thr)
-                raw_events.append((date, f"{thr:.0%}", drawdown))
+                raw_events.append((date, labels[i], drawdown))
+                if thr == max_threshold:
+                    max_threshold_trigger_date = date
 
     close_cycle()  # finalize whatever cycle is still in progress at the end of the series
 
@@ -91,20 +114,28 @@ HEADERS = {
 def format_drawdown_events_table(events: list[DrawdownEvent], thresholds: list[float], lang: str = "en") -> str:
     """Render the drawdown-events table, plus a per-bucket and overall count/avg-interval summary."""
     h = HEADERS[lang]
-    bucket_order = [f"{t:.0%}" for t in sorted(thresholds)] + [f">{max(thresholds):.0%}"]
+    bucket_order = _bucket_labels(thresholds)
+    bucket_width = max(_display_width(h["bucket"]), *(_display_width(b) for b in bucket_order)) + 2
 
-    lines = [f"{h['date']:<12}{h['bucket']:>8}{h['drawdown']:>12}{h['interval']:>18}"]
+    lines = [
+        _pad(h["date"], 12) + _pad(h["bucket"], bucket_width, ">") + _pad(h["drawdown"], 12, ">") + _pad(h["interval"], 18, ">")
+    ]
     for e in events:
         interval_str = str(e.interval_days) if e.interval_days is not None else "-"
-        lines.append(f"{str(e.date.date()):<12}{e.bucket:>8}{e.drawdown:>12.1%}{interval_str:>18}")
+        lines.append(
+            _pad(str(e.date.date()), 12)
+            + _pad(e.bucket, bucket_width, ">")
+            + _pad(f"{e.drawdown:.1%}", 12, ">")
+            + _pad(interval_str, 18, ">")
+        )
 
     bucket_dates: dict[str, list[pd.Timestamp]] = {b: [] for b in bucket_order}
     for e in events:
         bucket_dates[e.bucket].append(e.date)
 
-    label_width = 10
+    label_width = max(10, *(_display_width(b) for b in bucket_order)) + 2
     lines.append(h["summary_header"])
-    lines.append(f"{h['bucket_label']:<{label_width}}{h['count']:>8}{h['avg_interval']:>22}")
+    lines.append(_pad(h["bucket_label"], label_width) + _pad(h["count"], 8, ">") + _pad(h["avg_interval"], 22, ">"))
     for bucket in bucket_order:
         bucket_dates_sorted = sorted(bucket_dates[bucket])
         count = len(bucket_dates_sorted)
@@ -113,10 +144,10 @@ def format_drawdown_events_table(events: list[DrawdownEvent], thresholds: list[f
             avg_str = f"{sum(gaps) / len(gaps):.0f}"
         else:
             avg_str = "-"
-        lines.append(f"{bucket:<{label_width}}{count:>8}{avg_str:>22}")
+        lines.append(_pad(bucket, label_width) + _pad(str(count), 8, ">") + _pad(avg_str, 22, ">"))
 
     overall_intervals = [e.interval_days for e in events if e.interval_days is not None]
     overall_avg = f"{sum(overall_intervals) / len(overall_intervals):.0f}" if overall_intervals else "-"
-    lines.append(f"{h['overall']:<{label_width}}{len(events):>8}{overall_avg:>22}")
+    lines.append(_pad(h["overall"], label_width) + _pad(str(len(events)), 8, ">") + _pad(overall_avg, 22, ">"))
 
     return "\n".join(lines)

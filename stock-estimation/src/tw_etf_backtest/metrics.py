@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .text_format import display_width, pad
+
 TRADING_DAYS_PER_YEAR = 252
 
 
@@ -63,12 +65,12 @@ def format_stats_table(stats: dict[str, PerformanceStats], lang: str = "en") -> 
     ]
     rows = list(zip(labels, formatters))
 
-    col_width = max(12, max(len(n) for n in names) + 2)
-    label_width = 18
+    col_width = max(12, max(display_width(n) for n in names) + 2)
+    label_width = max(18, max(display_width(label) for label in labels) + 2)
 
-    header = " " * label_width + "".join(f"{n:>{col_width}}" for n in names)
+    header = " " * label_width + "".join(pad(n, col_width, ">") for n in names)
     lines = [header]
     for label, fmt in rows:
-        line = f"{label:<{label_width}}" + "".join(f"{fmt(stats[n]):>{col_width}}" for n in names)
+        line = pad(label, label_width) + "".join(pad(fmt(stats[n]), col_width, ">") for n in names)
         lines.append(line)
     return "\n".join(lines)
