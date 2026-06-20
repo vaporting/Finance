@@ -18,6 +18,7 @@ def plot_portfolio_value(
     result_b: BacktestResult,
     config: BacktestConfig,
     output_path: Path,
+    currency: str = "TWD",
 ) -> None:
     """Chart 1: portfolio value over time, with dip-buy markers on Portfolio A."""
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -38,7 +39,7 @@ def plot_portfolio_value(
     final_b = result_b.total_value.iloc[-1]
     ax.set_title("組合價值比較")
     ax.set_xlabel("日期")
-    ax.set_ylabel("組合價值 (TWD)")
+    ax.set_ylabel(f"組合價值 ({currency})")
     ax.legend(title=f"最終價值:A={final_a:,.0f}  B={final_b:,.0f}", loc="upper left")
     ax.grid(alpha=0.3)
 

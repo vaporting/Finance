@@ -1,13 +1,31 @@
-# 00631L vs 0050 Backtest
+# Stock Analysis — base/leveraged ETF backtest & drawdown analysis
 
-Two independent analyses of 00631L (Yuanta Taiwan 50 Leveraged 2x) vs 0050 (Yuanta Taiwan 50), run as separate subcommands so each invocation only does one thing:
+Backtesting and drawdown analysis for **base/leveraged ETF pairs**, across markets. Tickers come from a small built-in registry (see [`list-tickers`](#available-tickers)), so the same tooling works for Taiwan and US pairs without code changes.
 
-- **`backtest`** — compares two equal-capital portfolios over the same historical period:
-  - **Portfolio A** — 00631L at `equity_pct` of capital, the rest held as cash. Cash is deployed in tranches whenever 00631L drops past a drawdown threshold from its running high (a "buy the dip" ladder).
-  - **Portfolio B** — 0050 at 100% of capital, buy-and-hold.
+Three subcommands, each doing one thing:
 
-  Also charts the standalone cumulative return of 00631L vs 0050 to highlight how daily 2x leverage amplifies gains and losses.
-- **`drawdown-events`** — prints a table of every historical drawdown threshold crossing for 00631L (independent of cash/portfolio simulation), with the interval between events and a count/avg-interval summary per severity bucket.
+- **`backtest`** — compares two equal-capital portfolios over the same historical period (needs **both** a base and a leveraged ticker):
+  - **Portfolio A** — the leveraged ETF at `equity_pct` of capital, the rest held as cash. Cash is deployed in tranches whenever the leveraged ETF drops past a drawdown threshold from its running high (a "buy the dip" ladder).
+  - **Portfolio B** — the base ETF at 100% of capital, buy-and-hold.
+
+  Also charts the standalone cumulative return of the two ETFs to highlight how daily 2x leverage amplifies gains and losses.
+- **`drawdown-events`** — prints a table of every historical drawdown threshold crossing for a **single** ticker (independent of cash/portfolio simulation), with the interval between events and a count/avg-interval summary per severity bucket.
+- **`list-tickers`** — prints the available tickers in the registry.
+
+## Available tickers
+
+```bash
+uv run stock-analysis list-tickers
+```
+
+| Symbol | Name | Market | Currency | Leverage | Base |
+|---|---|---|---|---|---|
+| `0050` | Yuanta Taiwan 50 | TW | TWD | 1x | – |
+| `00631L` | Yuanta Daily Taiwan 50 Bull 2X | TW | TWD | 2x | `0050` |
+| `QQQ` | Invesco QQQ Trust (Nasdaq-100) | US | USD | 1x | – |
+| `QLD` | ProShares Ultra QQQ (2x Nasdaq-100) | US | USD | 2x | `QQQ` |
+
+Tickers are selected by these short symbols (case-insensitive); the registry maps each to its yfinance symbol, market, currency, daily-leverage factor, and — for a leveraged ETF — the base ticker used to correct its price history. New tickers are added in [`src/stock_analysis/tickers.py`](src/stock_analysis/tickers.py).
 
 ## Project layout
 
@@ -16,16 +34,17 @@ stock-estimation/
 ├── pyproject.toml
 ├── uv.lock
 ├── src/
-│   └── tw_etf_backtest/
+│   └── stock_analysis/
+│       ├── tickers.py           # ticker registry + lookup helpers
 │       ├── config.py            # BacktestConfig dataclass (all tunable parameters)
-│       ├── data.py               # yfinance download + CSV caching
-│       ├── strategy.py           # portfolio backtest engine
-│       ├── drawdown_events.py    # standalone drawdown-event analysis
-│       ├── metrics.py            # performance stats
-│       ├── plot.py               # charts
-│       └── cli.py                # argparse subcommands, entry point
-├── data/                         # cached price CSVs (gitignored)
-└── output/                       # generated chart PNGs (gitignored)
+│       ├── data.py              # yfinance download + CSV caching
+│       ├── strategy.py          # portfolio backtest engine
+│       ├── drawdown_events.py   # standalone drawdown-event analysis
+│       ├── metrics.py           # performance stats
+│       ├── plot.py              # charts
+│       └── cli.py               # argparse subcommands, entry point
+├── data/                        # cached price CSVs (gitignored)
+└── output/                      # generated chart PNGs (gitignored)
 ```
 
 ## Setup
@@ -36,38 +55,37 @@ Requires [uv](https://docs.astral.sh/uv/).
 uv sync
 ```
 
-This installs the project (editable) and creates the `tw-etf-backtest` command.
+This installs the project (editable) and creates the `stock-analysis` command.
 
 ## Quick start
 
 ```bash
-uv run tw-etf-backtest backtest
-uv run tw-etf-backtest drawdown-events
+uv run stock-analysis list-tickers
+uv run stock-analysis backtest
+uv run stock-analysis drawdown-events
 ```
 
 `backtest` will:
-1. Download (and cache) daily prices for `00631L.TW` and `0050.TW` from yfinance.
+1. Download (and cache) daily prices for the chosen leveraged + base tickers from yfinance.
 2. Run both portfolio simulations and print a performance comparison table.
 3. Save two charts to `output/`:
    - `portfolio_value.png` — Portfolio A vs Portfolio B value over time, with dip-buy triggers marked.
-   - `asset_return.png` — cumulative return of 00631L vs 0050.
+   - `asset_return.png` — cumulative return of the leveraged ETF vs the base ETF.
 
 `drawdown-events` will:
-1. Download (and cache) daily prices for `00631L.TW` and `0050.TW` (the base ticker is still needed to correct a data quality issue in 00631L's history — see [Data source and caching](#data-source-and-caching)).
+1. Download (and cache) daily prices for `--ticker`. If it is a leveraged ticker, its base pair is also downloaded to correct a data quality issue (see [Data source and caching](#data-source-and-caching)); a base ticker needs nothing else.
 2. Print a table of every drawdown-ladder threshold crossing, plus the deepest-trough event for any crash that exceeded the largest threshold.
 3. Print a count + average-interval summary per bucket. No charts are produced.
 
 ## CLI parameters
 
-All parameters default to the values in `src/tw_etf_backtest/config.py` (`BacktestConfig`).
+All parameters default to the values in [`src/stock_analysis/config.py`](src/stock_analysis/config.py) (`BacktestConfig`).
 
-### Shared by both subcommands
+### Shared by `backtest` and `drawdown-events`
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--lang` | `en` | Language for printed output: `en` (English) or `zh` (Traditional Chinese) |
-| `--lev-ticker` | `00631L.TW` | Leveraged ETF ticker |
-| `--base-ticker` | `0050.TW` | Base ETF ticker (also used to correct a data discontinuity in the leveraged ticker's history) |
 | `--start-date` | see `config.py` | Analysis start date |
 | `--end-date` | see `config.py` | Analysis end date |
 | `--dip-thresholds` | `0.15 0.25 0.40` | Drawdown ladder thresholds from the running high; each fires once per high-watermark cycle |
@@ -76,33 +94,47 @@ All parameters default to the values in `src/tw_etf_backtest/config.py` (`Backte
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--total-capital` | `1000000` | Starting capital shared by both portfolios (TWD) |
+| `--lev-ticker` | `00631L` | Leveraged ETF held in Portfolio A (registry symbol) |
+| `--base-ticker` | `0050` | Base ETF for Portfolio B, and the reference used to correct the leveraged ticker's history (registry symbol) |
+| `--total-capital` | `1000000` | Starting capital shared by both portfolios (in the market's currency) |
 | `--equity-pct` | `0.70` | Fraction of capital allocated to the leveraged ETF in Portfolio A (remainder is cash) |
 | `--tranche-fraction` | `0.3333` | Fraction of the *initial* cash allocation deployed per triggered tranche. Ignored if `--tranche-amount` is set |
-| `--tranche-amount` | `50000` | Fixed TWD amount deployed per triggered tranche (capped at remaining cash). Overrides `--tranche-fraction`. To use fraction-based sizing instead, set `tranche_amount=None` in `config.py` |
+| `--tranche-amount` | `50000` | Fixed cash amount deployed per triggered tranche (capped at remaining cash). Overrides `--tranche-fraction`. To use fraction-based sizing instead, set `tranche_amount=None` in `config.py` |
 | `--cash-yield-annual` | `0.01` | Annual interest rate credited on idle cash |
 | `--rebalance` | off | Enable periodic rebalancing of Portfolio A back to `--rebalance-target` |
 | `--rebalance-freq` | `Q` | Rebalance frequency (pandas offset alias, e.g. `Q` quarterly, `Y` yearly) |
 | `--rebalance-target` | `0.70` | Target equity weight when rebalancing |
 
-Example — more aggressive dip-buying, no leverage tilt, with yearly rebalancing:
+### `drawdown-events` only
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--ticker` | `00631L` | Single ticker to analyze (registry symbol). A leveraged ticker auto-loads its base for discontinuity correction; a base ticker is analyzed on its own |
+
+### `list-tickers`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--lang` | `en` | Language for the table headers |
+
+Example — US pair, more aggressive dip-buying, with yearly rebalancing:
 
 ```bash
-uv run tw-etf-backtest backtest --equity-pct 0.5 --dip-thresholds 0.05 0.10 0.15 --rebalance --rebalance-freq Y
+uv run stock-analysis backtest --base-ticker QQQ --lev-ticker QLD --equity-pct 0.5 --dip-thresholds 0.05 0.10 0.15 --rebalance --rebalance-freq Y
 ```
 
-Example — drawdown events with a custom ladder:
+Example — drawdown events for the base ETF, with a custom ladder, in Chinese:
 
 ```bash
-uv run tw-etf-backtest drawdown-events --dip-thresholds 0.1 0.2 0.3 --lang zh
+uv run stock-analysis drawdown-events --ticker 0050 --dip-thresholds 0.1 0.2 0.3 --lang zh
 ```
 
 ## Strategy logic (`backtest`)
 
-- **Drawdown ladder**: drawdown is measured against the highest 00631L price seen so far during the backtest (the running high watermark). Each threshold in `--dip-thresholds` fires independently and only once per cycle; hitting a new high resets all thresholds so the ladder can re-trigger on the next decline.
+- **Drawdown ladder**: drawdown is measured against the highest leveraged-ETF price seen so far during the backtest (the running high watermark). Each threshold in `--dip-thresholds` fires independently and only once per cycle; hitting a new high resets all thresholds so the ladder can re-trigger on the next decline.
 - **Tranche sizing**: two modes, selected by whether `--tranche-amount` is set.
   - *Fraction mode*: each trigger deploys `tranche_fraction * initial_cash` (capped at remaining cash), so with `1/3` and three thresholds, all initial cash is fully deployed if all three thresholds fire before cash runs out.
-  - *Fixed-amount mode* (default): each trigger deploys a fixed `--tranche-amount` TWD (capped at remaining cash), regardless of how much initial cash there was. Useful for modeling "always buy NT$50,000 on each dip" rather than a percentage of the cash pool.
+  - *Fixed-amount mode* (default): each trigger deploys a fixed `--tranche-amount` (capped at remaining cash), regardless of how much initial cash there was. Useful for modeling "always buy a fixed amount on each dip" rather than a percentage of the cash pool.
 - **Rebalancing (optional)**: if enabled, at the end of each period (`--rebalance-freq`) Portfolio A is rebalanced back to `--rebalance-target` equity weight, buying with available cash or selling equity to raise cash.
 
 ## Drawdown events logic (`drawdown-events`)
@@ -116,8 +148,8 @@ uv run tw-etf-backtest drawdown-events --dip-thresholds 0.1 0.2 0.3 --lang zh
 
 ### `backtest`
 - **Performance table** (printed to stdout): Total Return, CAGR, Max Drawdown, Annual Volatility, and Final Value, shown for both portfolios and for the two underlying tickers individually.
-- **`output/portfolio_value.png`**: portfolio value over time for both portfolios, with red markers showing when Portfolio A's dip-buy ladder triggered.
-- **`output/asset_return.png`**: cumulative return (%) of 00631L vs 0050 from the start of the backtest, illustrating leverage amplification.
+- **`output/portfolio_value.png`**: portfolio value over time for both portfolios (y-axis labeled in the market's currency), with red markers showing when Portfolio A's dip-buy ladder triggered.
+- **`output/asset_return.png`**: cumulative return (%) of the leveraged ETF vs the base ETF from the start of the backtest, illustrating leverage amplification.
 
 ### `drawdown-events`
 - **Events table** (printed to stdout): date, bucket, drawdown %, and interval since the previous event.
@@ -125,12 +157,14 @@ uv run tw-etf-backtest drawdown-events --dip-thresholds 0.1 0.2 0.3 --lang zh
 
 ## Data source and caching
 
-Prices are downloaded via `yfinance` and cached as CSV files under `data/` (keyed by ticker and date range), so repeated runs with the same parameters don't re-download.
+Prices are downloaded via `yfinance` (using each ticker's registered yfinance symbol) and cached as CSV files under `data/` (keyed by symbol and date range), so repeated runs with the same parameters don't re-download.
 
-`data.py` also detects and corrects a known data quality issue: 00631L has at least one undocumented price discontinuity in Yahoo Finance's historical data (not recorded as a stock split) where the leveraged ETF's daily return is wildly inconsistent with its defining 2x relationship to 0050's same-day return. Any day where this deviation exceeds a sanity threshold is treated as a discontinuity, and all prior history is automatically rescaled to splice the series back together. This is why `--base-ticker` is required by both subcommands, even `drawdown-events` which otherwise only analyzes the leveraged ticker.
+`data.py` also detects and corrects a known data quality issue with daily-leveraged ETFs. Products like `00631L` and `QLD` occasionally undergo unit consolidations that Yahoo Finance fails to record as a stock split, leaving a single-day price "cliff" in the history that isn't a real market move. Such a cliff is detected by checking whether a day's return tracks roughly `leverage × base` same-day return (the leverage factor comes from the registry); any day where this deviation exceeds a sanity threshold is treated as a discontinuity, and all prior history is automatically rescaled to splice the series back together.
+
+This is **why a leveraged ticker needs its base pair**: the correction uses the base as a reference series. `backtest` loads both anyway, and `drawdown-events` on a leveraged ticker auto-loads its registered base for this purpose. A base ETF doesn't decay or split unrecorded in this way and has no reference to correct against, so `drawdown-events` on a base ticker loads only that one series.
 
 ## Troubleshooting
 
-- **Network/ticker errors**: `load_prices` raises a clear error if yfinance returns no data — check the ticker symbols and your network connection.
+- **Network/ticker errors**: an unknown `--ticker`/`--lev-ticker`/`--base-ticker` is rejected immediately with the list of available symbols. `load_prices` raises a clear error if yfinance returns no data for a known symbol — check your network connection.
 - **Stale cache**: if you suspect cached data is out of date or corrupted, delete the relevant file(s) under `data/` and re-run.
 - **CJK font warnings in charts**: chart labels are in Traditional Chinese, rendered with the `PingFang TC` / `Heiti TC` / `Arial Unicode MS` font fallback chain configured in `plot.py`. On a system without any of these fonts, labels will render as missing-glyph ("tofu") boxes — install a CJK-capable font or switch the fallback list to one available on your machine.
