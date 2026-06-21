@@ -13,6 +13,9 @@ class DrawdownEvent:
     date: pd.Timestamp
     bucket: str  # e.g. "15% ~ 25%", "25% ~ 40%", "40% ~"
     drawdown: float  # negative fraction, e.g. -0.182
+    price: float  # price on `date`
+    peak_date: pd.Timestamp  # date of the running high the drawdown is measured from
+    peak_price: float  # price on `peak_date`
     interval_days: int | None = None  # calendar days since the previous row in the full table
 
 
@@ -47,19 +50,20 @@ def compute_drawdown_events(prices: pd.Series, thresholds: list[float]) -> list[
 
     dates = prices.index
     peak = prices.iloc[0]
+    peak_date = dates[0]
     triggered: set[float] = set()
     cycle_min_price = prices.iloc[0]
     cycle_min_date = dates[0]
     max_threshold_trigger_date: pd.Timestamp | None = None
 
-    raw_events: list[tuple[pd.Timestamp, str, float]] = []
+    raw_events: list[tuple[pd.Timestamp, str, float, pd.Timestamp]] = []
 
     def close_cycle() -> None:
         cycle_drawdown = cycle_min_price / peak - 1
         # Skip the trough event if it falls on the same day the max threshold was first
         # crossed: in that case it carries no information beyond the regular crossing event.
         if cycle_drawdown <= -max_threshold and cycle_min_date != max_threshold_trigger_date:
-            raw_events.append((cycle_min_date, open_bucket, cycle_drawdown))
+            raw_events.append((cycle_min_date, open_bucket, cycle_drawdown, peak_date))
 
     for date in dates:
         price = prices.loc[date]
@@ -67,6 +71,7 @@ def compute_drawdown_events(prices: pd.Series, thresholds: list[float]) -> list[
         if price > peak:
             close_cycle()
             peak = price
+            peak_date = date
             triggered = set()
             cycle_min_price = price
             cycle_min_date = date
@@ -79,7 +84,7 @@ def compute_drawdown_events(prices: pd.Series, thresholds: list[float]) -> list[
         for i, thr in enumerate(thresholds):
             if thr not in triggered and drawdown <= -thr:
                 triggered.add(thr)
-                raw_events.append((date, labels[i], drawdown))
+                raw_events.append((date, labels[i], drawdown, peak_date))
                 if thr == max_threshold:
                     max_threshold_trigger_date = date
 
@@ -87,11 +92,23 @@ def compute_drawdown_events(prices: pd.Series, thresholds: list[float]) -> list[
 
     raw_events.sort(key=lambda e: e[0])
 
+    # If multiple thresholds (or a threshold and the trough) fire on the same day, keep only
+    # the deepest one: it's a strict superset of the information in the shallower rows.
+    deduped: dict[pd.Timestamp, tuple[pd.Timestamp, str, float, pd.Timestamp]] = {}
+    for event in raw_events:
+        deduped[event[0]] = event
+    raw_events = list(deduped.values())
+
     events: list[DrawdownEvent] = []
     previous_date: pd.Timestamp | None = None
-    for date, bucket, drawdown in raw_events:
+    for date, bucket, drawdown, event_peak_date in raw_events:
         interval_days = (date - previous_date).days if previous_date is not None else None
-        events.append(DrawdownEvent(date=date, bucket=bucket, drawdown=drawdown, interval_days=interval_days))
+        events.append(
+            DrawdownEvent(
+                date=date, bucket=bucket, drawdown=drawdown, price=prices.loc[date],
+                peak_date=event_peak_date, peak_price=prices.loc[event_peak_date], interval_days=interval_days,
+            )
+        )
         previous_date = date
 
     return events
@@ -99,12 +116,14 @@ def compute_drawdown_events(prices: pd.Series, thresholds: list[float]) -> list[
 
 HEADERS = {
     "en": {
-        "date": "Date", "bucket": "Bucket", "drawdown": "Drawdown", "interval": "Interval (days)",
+        "date": "Date", "bucket": "Bucket", "drawdown": "Drawdown", "price": "Price",
+        "peak_date": "Peak Date", "peak_price": "Peak Price", "interval": "Interval (days)",
         "summary_header": "\nSummary", "bucket_label": "Bucket", "count": "Count",
         "avg_interval": "Avg Interval (days)", "overall": "Overall",
     },
     "zh": {
-        "date": "日期", "bucket": "門檻", "drawdown": "回撤幅度", "interval": "間隔天數",
+        "date": "日期", "bucket": "門檻", "drawdown": "回撤幅度", "price": "價格",
+        "peak_date": "高點日期", "peak_price": "高點價格", "interval": "間隔天數",
         "summary_header": "\n統計摘要", "bucket_label": "門檻", "count": "次數",
         "avg_interval": "平均間隔(天)", "overall": "合計",
     },
@@ -118,7 +137,9 @@ def format_drawdown_events_table(events: list[DrawdownEvent], thresholds: list[f
     bucket_width = max(_display_width(h["bucket"]), *(_display_width(b) for b in bucket_order)) + 2
 
     lines = [
-        _pad(h["date"], 12) + _pad(h["bucket"], bucket_width, ">") + _pad(h["drawdown"], 12, ">") + _pad(h["interval"], 18, ">")
+        _pad(h["date"], 12) + _pad(h["bucket"], bucket_width, ">") + _pad(h["drawdown"], 12, ">")
+        + _pad(h["price"], 12, ">") + _pad(h["peak_date"], 14, ">") + _pad(h["peak_price"], 14, ">")
+        + _pad(h["interval"], 18, ">")
     ]
     for e in events:
         interval_str = str(e.interval_days) if e.interval_days is not None else "-"
@@ -126,6 +147,9 @@ def format_drawdown_events_table(events: list[DrawdownEvent], thresholds: list[f
             _pad(str(e.date.date()), 12)
             + _pad(e.bucket, bucket_width, ">")
             + _pad(f"{e.drawdown:.1%}", 12, ">")
+            + _pad(f"{e.price:.2f}", 12, ">")
+            + _pad(str(e.peak_date.date()), 14, ">")
+            + _pad(f"{e.peak_price:.2f}", 14, ">")
             + _pad(interval_str, 18, ">")
         )
 

@@ -1,5 +1,6 @@
 """Price loading via yfinance with local CSV caching."""
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -12,17 +13,44 @@ from .tickers import get_ticker
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 
 
-def _cache_path(ticker: str, start: str, end: str) -> Path:
+def _cache_path(ticker: str) -> Path:
     safe_ticker = ticker.replace("/", "_")
-    return DATA_DIR / f"{safe_ticker}_{start}_{end}.csv"
+    return DATA_DIR / f"{safe_ticker}.csv"
+
+
+def _range_path(ticker: str) -> Path:
+    safe_ticker = ticker.replace("/", "_")
+    return DATA_DIR / f"{safe_ticker}.range.json"
+
+
+def _read_cached_range(ticker: str) -> tuple[str, str] | None:
+    range_file = _range_path(ticker)
+    if not range_file.exists():
+        return None
+    cached = json.loads(range_file.read_text())
+    return cached["start"], cached["end"]
 
 
 def _download_close(ticker: str, start: str, end: str) -> pd.Series:
-    cache_file = _cache_path(ticker, start, end)
-    if cache_file.exists():
-        series = pd.read_csv(cache_file, index_col=0, parse_dates=True)["close"]
-        series.name = ticker
-        return series
+    """Load close prices for one yfinance symbol, caching one CSV per ticker on disk.
+
+    The cache stores the requested [start, end) bounds in a sidecar JSON file rather
+    than inferring them from the data's own date range, since yfinance's `end` is
+    exclusive and weekends/holidays make the last cached trading day an unreliable
+    proxy for the bound that was actually requested. If the newly requested range
+    falls entirely inside the cached bounds, the cached CSV is reused (sliced to the
+    request); otherwise both files are replaced with a fresh download for the new range.
+    """
+    cache_file = _cache_path(ticker)
+    cached_range = _read_cached_range(ticker)
+
+    if cache_file.exists() and cached_range is not None:
+        cached_start, cached_end = cached_range
+        if cached_start <= start and end <= cached_end:
+            series = pd.read_csv(cache_file, index_col=0, parse_dates=True)["close"]
+            series = series.loc[start:end]
+            series.name = ticker
+            return series
 
     raw = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
     if raw.empty:
@@ -38,6 +66,7 @@ def _download_close(ticker: str, start: str, end: str) -> pd.Series:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     close.rename("close").to_csv(cache_file)
+    _range_path(ticker).write_text(json.dumps({"start": start, "end": end}))
     return close
 
 

@@ -7,7 +7,7 @@ from .config import BacktestConfig
 from .data import load_prices, load_single_price
 from .drawdown_events import compute_drawdown_events, format_drawdown_events_table
 from .metrics import compute_stats, format_stats_table
-from .plot import plot_asset_returns, plot_portfolio_value
+from .plot import plot_asset_returns, plot_drawdown_events, plot_portfolio_value
 from .strategy import run_portfolio_a, run_portfolio_b
 from .text_format import display_width, pad
 from .tickers import get_ticker, list_tickers, ticker_symbol
@@ -218,6 +218,11 @@ def run_drawdown_events(args: argparse.Namespace) -> None:
     events = compute_drawdown_events(prices, thresholds)
     print(msg["drawdown_events_header"].format(ticker=ticker.symbol))
     print(format_drawdown_events_table(events, thresholds, lang=lang))
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    chart_path = OUTPUT_DIR / f"drawdown_events_{ticker.symbol}.png"
+    plot_drawdown_events(prices, events, ticker.symbol, chart_path, lang=lang)
+    print(msg["charts_saved"].format(dir=OUTPUT_DIR))
 
 
 def run_list_tickers(args: argparse.Namespace) -> None:
